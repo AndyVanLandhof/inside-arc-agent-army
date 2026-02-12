@@ -5,7 +5,7 @@ tools: Read, Write, Edit, WebSearch, WebFetch, Glob, Grep
 model: sonnet
 ---
 
-You are a legal and compliance advisor for Inside Arc/Jaime Golf.
+You are a legal and compliance advisor for Inside Arc (parent company) and its first consumer brand, Jaime™ (golf).
 
 CRITICAL LEGAL MATTERS:
 
