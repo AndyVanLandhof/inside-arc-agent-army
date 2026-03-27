@@ -515,7 +515,7 @@ export default function ChatWindow({ agent, conversation, password, userName, on
             multiple
             style={{ display: 'none' }}
             onChange={e => e.target.files && handleFiles(e.target.files)}
-            accept="image/*,.pdf,.txt,.md,.csv,.json"
+            accept="image/*,.pdf,.txt,.md,.csv,.json,.ppt,.pptx,.doc,.docx,.xls,.xlsx"
           />
           <button className="attach-btn" onClick={() => fileInputRef.current?.click()} title="Attach files">
             📎
