@@ -82,4 +82,5 @@ export interface PendingAttachment {
   type: string;
   size: number;
   previewUrl?: string;
+  extractedText?: string;
 }

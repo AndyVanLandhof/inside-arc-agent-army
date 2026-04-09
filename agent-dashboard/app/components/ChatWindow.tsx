@@ -84,21 +84,14 @@ export default function ChatWindow({ agent, conversation, password, userName, on
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
 
-    // Upload pending files first
-    for (const pf of pendingFiles) {
-      const formData = new FormData();
-      formData.append('file', pf.file);
-      formData.append('conversationId', String(conversation.id));
-      formData.append('password', password);
-      try {
-        await fetch('/api/upload', { method: 'PUT', body: formData });
-      } catch {
-        onToast(`Failed to upload ${pf.name}`);
-      }
-    }
+    // Inject extracted document text into the message
+    const docContext = pendingFiles
+      .filter(pf => pf.extractedText)
+      .map(pf => `[Attached: ${pf.name}]\n\n${pf.extractedText}`)
+      .join('\n\n---\n\n');
     setPendingFiles([]);
 
-    const userMsg = input;
+    const userMsg = docContext ? `${docContext}\n\n---\n\n${input}` : input;
     setInput('');
     setMessages(prev => [...prev, {
       id: Date.now(),
@@ -215,22 +208,57 @@ export default function ChatWindow({ agent, conversation, password, userName, on
   };
 
   // ── File Handling ──
-  const handleFiles = (fileList: FileList) => {
-    const newFiles: PendingAttachment[] = [];
+  const handleFiles = async (fileList: FileList) => {
+    const MAX_TEXT = 50000;
     for (const file of Array.from(fileList)) {
-      if (file.size > 10 * 1024 * 1024) {
-        onToast(`${file.name} is too large (max 10MB)`);
+      if (file.size > 32 * 1024 * 1024) {
+        onToast(`${file.name} is too large (max 32MB)`);
         continue;
       }
-      newFiles.push({
+      const ext = file.name.split('.').pop()?.toLowerCase();
+      let extractedText: string | undefined;
+      try {
+        if (ext === 'txt' || ext === 'md' || ext === 'csv' || ext === 'json') {
+          extractedText = await file.text();
+        } else if (ext === 'docx') {
+          const arrayBuffer = await file.arrayBuffer();
+          const mammoth = await import('mammoth');
+          const result = await mammoth.extractRawText({ arrayBuffer });
+          extractedText = result.value;
+        } else if (ext === 'pdf') {
+          const arrayBuffer = await file.arrayBuffer();
+          const pdfjsLib = await import('pdfjs-dist');
+          pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+          const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+          const pages: string[] = [];
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const content = await page.getTextContent();
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            pages.push(content.items.map((item: any) => ('str' in item ? item.str : '')).join(' '));
+          }
+          extractedText = pages.join('\n\n');
+          if (!extractedText.trim()) {
+            onToast(`${file.name} appears to be a scanned PDF — no text could be extracted`);
+            extractedText = undefined;
+          }
+        }
+        if (extractedText && extractedText.length > MAX_TEXT) {
+          extractedText = extractedText.slice(0, MAX_TEXT) + '\n\n[... truncated at 50,000 characters ...]';
+          onToast(`${file.name} was truncated to fit the context window`);
+        }
+      } catch {
+        onToast(`Could not read ${file.name}`);
+      }
+      setPendingFiles(prev => [...prev, {
         file,
         name: file.name,
         type: file.type,
         size: file.size,
         previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
-      });
+        extractedText,
+      }]);
     }
-    setPendingFiles(prev => [...prev, ...newFiles]);
   };
 
   const handleDrop = (e: React.DragEvent) => {

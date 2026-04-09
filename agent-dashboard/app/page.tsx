@@ -366,9 +366,6 @@ export default function Home() {
           <button className="bp-toggle" onClick={() => setShowBusinessPlan(true)} title="Business Plan">
             Business Plan
           </button>
-          <button className="bp-toggle" onClick={() => setShowFiles(true)} title="Files">
-            Files
-          </button>
           <button className="search-toggle" onClick={() => setShowSearch(true)} title="Search">
             🔍
           </button>
