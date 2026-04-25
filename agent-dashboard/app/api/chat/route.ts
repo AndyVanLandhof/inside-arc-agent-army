@@ -1,8 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { validatePassword, getAgentFacts, getMessages, createMessage, getAttachments, getContextFiles, updateConversation, upsertUserActivity } from '@/app/lib/db';
 import { getAgentById, getToolsForAgent } from '@/app/lib/agents';
 import { executeToolCall } from '@/app/lib/tools';
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// System prompt for Claude when acting as impartial judge in The Panel.
+// Perspectives are labelled A/B with order randomised so Claude cannot identify its own output.
+const PANEL_JUDGE_SYSTEM = `You are an impartial synthesis judge reviewing two anonymous perspectives on a strategic question. You do not know which advisor produced each perspective and must evaluate them purely on the quality of reasoning.
+
+Your response must use exactly this structure:
+
+**Where they agree:**
+[Bullet the shared conclusions and common ground]
+
+**Where they differ:**
+[For each meaningful divergence: state both positions, then give a clear verdict on which reasoning is stronger and why. Do not hedge — if one argument is better, say so.]
+
+**Synthesis & verdict:**
+[A final recommendation that draws on the strongest elements of both perspectives. Acknowledge genuine disagreements rather than papering over them with vague compromise.]`;
 
 export const maxDuration = 300;
 
@@ -136,14 +154,63 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  const client = new Anthropic({ apiKey });
+
+  // ── The Panel: fan out to Claude + GPT-4o in parallel, judge anonymously ──
+  if (agentId === 'panel') {
+    const historyMessages = messages;
+
+    const [claudeRes, gptRes] = await Promise.all([
+      client.messages.create({
+        model: 'claude-sonnet-4-5-20250929',
+        max_tokens: 2048,
+        system: systemPrompt,
+        messages: historyMessages,
+      }),
+      openai.chat.completions.create({
+        model: 'gpt-4o',
+        max_tokens: 2048,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...historyMessages.map(m => ({
+            role: m.role as 'user' | 'assistant',
+            content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+          })),
+        ],
+      }),
+    ]);
+
+    const claudeText = claudeRes.content[0].type === 'text' ? claudeRes.content[0].text : '';
+    const gptText = gptRes.choices[0].message.content ?? '';
+
+    // Randomise A/B labels so the judge can't identify its own output
+    const claudeIsA = Math.random() < 0.5;
+    const perspA = claudeIsA ? claudeText : gptText;
+    const perspB = claudeIsA ? gptText : claudeText;
+
+    const synthesisRes = await client.messages.create({
+      model: 'claude-sonnet-4-5-20250929',
+      max_tokens: 2048,
+      system: PANEL_JUDGE_SYSTEM,
+      messages: [{
+        role: 'user',
+        content: `**Perspective A:**\n${perspA}\n\n---\n\n**Perspective B:**\n${perspB}\n\nPlease synthesise these two perspectives.`,
+      }],
+    });
+
+    const synthesis = synthesisRes.content[0].type === 'text' ? synthesisRes.content[0].text : '';
+    const fullText = `**Perspective A:**\n${perspA}\n\n---\n\n**Perspective B:**\n${perspB}\n\n---\n\n${synthesis}`;
+
+    const savedMessage = await createMessage(conversationId, 'assistant', fullText);
+    return NextResponse.json({ message: savedMessage, toolsUsed: [], newTitle: null });
+  }
+
   // Get tools for this agent
   const tools = getToolsForAgent(agentId).map(t => ({
     name: t.name,
     description: t.description,
     input_schema: t.input_schema as Anthropic.Tool['input_schema'],
   }));
-
-  const client = new Anthropic({ apiKey });
 
   // Tool use loop — keep going until we get a final text response
   let response = await client.messages.create({
